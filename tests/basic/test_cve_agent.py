@@ -4,7 +4,7 @@ from unittest import TestCase
 import git
 
 from aider.cve import parse_cve_text_dataset
-from aider.cve_agent import PromptFeedbackProfile
+from aider.cve_agent import PromptFeedbackProfile, apply_point_edit_plan, parse_point_edit_plan
 from aider.utils import GitTemporaryDirectory
 
 
@@ -58,3 +58,52 @@ class TestCVEAgent(TestCase):
         self.assertIn("concrete code edits", prompt_prefix)
         self.assertIn("cleanup ordering", prompt_prefix)
         self.assertIn("upstream fix", prompt_prefix)
+
+    def test_parse_and_apply_point_edit_plan(self):
+        response = """
+{
+  "summary": "insert one guard",
+  "edits": [
+    {
+      "path": "drivers/hid/hid-ntrig.c",
+      "search_lines": [
+        "struct usb_device *usb_dev = hid_to_usb_dev(hdev);",
+        "unsigned char *data = kmalloc(8, GFP_KERNEL);"
+      ],
+      "replace_lines": [
+        "struct usb_device *usb_dev = hid_to_usb_dev(hdev);",
+        "if (!hid_is_usb(hdev))",
+        "\\treturn;",
+        "",
+        "unsigned char *data = kmalloc(8, GFP_KERNEL);"
+      ]
+    }
+  ]
+}
+"""
+
+        plan = parse_point_edit_plan(response)
+        self.assertEqual(plan.summary, "insert one guard")
+        self.assertEqual(len(plan.edits), 1)
+
+        with GitTemporaryDirectory() as dname:
+            target = Path(dname) / "drivers/hid/hid-ntrig.c"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                "static void ntrig_report_version(struct hid_device *hdev)\n"
+                "{\n"
+                "\tstruct usb_device *usb_dev = hid_to_usb_dev(hdev);\n"
+                "\tunsigned char *data = kmalloc(8, GFP_KERNEL);\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            result = apply_point_edit_plan(
+                dname,
+                plan,
+                allowed_paths=["drivers/hid/hid-ntrig.c"],
+            )
+
+            self.assertFalse(result["failures"])
+            updated = target.read_text(encoding="utf-8")
+            self.assertIn("if (!hid_is_usb(hdev))", updated)

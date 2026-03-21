@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -188,6 +189,32 @@ class PromptFeedbackProfile:
         )
 
 
+@dataclass
+class PointEdit:
+    path: str
+    search_lines: list[str] = field(default_factory=list)
+    replace_lines: list[str] = field(default_factory=list)
+    reason: str | None = None
+
+
+@dataclass
+class PointEditPlan:
+    summary: str = ""
+    edits: list[PointEdit] = field(default_factory=list)
+
+
+@dataclass
+class PointEditRunResult:
+    response: str = ""
+    responses: list[str] = field(default_factory=list)
+    rounds: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    parse_failures: int = 0
+    apply_failures: list[str] = field(default_factory=list)
+    strategy: str = "point_edit_json"
+
+
 def load_feedback_profile(path):
     path = Path(path)
     if not path.exists():
@@ -291,6 +318,60 @@ def build_patch_prompt(case):
     )
 
 
+def build_point_edit_prompt(case, cve_context, root_cause_report, editable_files, prompt_prefix=None):
+    lines = []
+    if prompt_prefix:
+        lines.append(prompt_prefix)
+        lines.append("")
+
+    lines.extend(
+        [
+            "You are generating targeted code edits for a Linux kernel security fix.",
+            f"CVE: {case.cve}",
+            f"Target vulnerable commit: {case.pre_fix_commit}",
+            f"Upstream fixed commit: {case.fix_commit}",
+            "",
+            "Return strict JSON only. No markdown fences, no commentary.",
+            'Use exactly this schema: {"summary": "...", "edits": [{"path": "...", "search_lines": ["..."], "replace_lines": ["..."], "reason": "..."}]}',
+            "",
+            "Rules:",
+            "- Only edit the provided file paths.",
+            "- search_lines must be an exact contiguous block from the current file.",
+            "- replace_lines must be the full replacement for that block.",
+            "- Keep each edit small and local.",
+            "- For insertions, include surrounding unchanged anchor lines in both search_lines and replace_lines.",
+            "- Do not reorder unrelated code.",
+            "- Preserve exact leading whitespace. Tabs are significant.",
+            "- If the local code is structurally close to upstream, preserve the same statement order and placement as the upstream fix.",
+            "- If no safe edit can be produced, return an empty edits array.",
+            "",
+            "Root-cause analysis:",
+            root_cause_report.strip(),
+            "",
+            "Upstream reference patch:",
+            cve_context.patch_excerpt(),
+            "",
+            "Editable files and current contents as JSON line arrays. Copy exact strings from them, including escaped tabs:",
+            format_editable_files(editable_files),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def build_point_edit_retry_prompt(parse_error=None, apply_failures=None):
+    lines = [
+        "Your previous edit response was not applied successfully.",
+        "Return strict JSON only, using the same schema as before.",
+    ]
+    if parse_error:
+        lines.append("JSON parse problem: " + parse_error)
+    if apply_failures:
+        lines.append("Apply failures:")
+        lines.extend(apply_failures)
+    lines.append("Try again with smaller, exact search_lines blocks copied from the current file.")
+    return "\n".join(lines)
+
+
 def build_localization_messages(localization_report):
     return [
         {
@@ -385,6 +466,180 @@ def build_static_root_cause_report(case, cve_context, localization_report=None):
     )
 
     return "\n".join(lines)
+
+
+def format_editable_files(editable_files):
+    chunks = []
+    for path, content in editable_files:
+        chunks.append(f"<file path=\"{path}\">")
+        chunks.append(json.dumps(content.splitlines(), ensure_ascii=False, indent=2))
+        chunks.append("</file>")
+    return "\n".join(chunks)
+
+
+def extract_json_object(text):
+    text = text.strip()
+    if not text:
+        raise ValueError("Empty model response")
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("No JSON object found in model response")
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text[start:], start=start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start : index + 1])
+
+    raise ValueError("Unterminated JSON object in model response")
+
+
+def parse_point_edit_plan(response_text):
+    data = extract_json_object(response_text)
+    edits = []
+    for item in data.get("edits", []):
+        edits.append(
+            PointEdit(
+                path=item["path"],
+                search_lines=normalize_line_array(item.get("search_lines") or item.get("search")),
+                replace_lines=normalize_line_array(item.get("replace_lines") or item.get("replace")),
+                reason=item.get("reason"),
+            )
+        )
+    return PointEditPlan(summary=data.get("summary", ""), edits=edits)
+
+
+def normalize_line_array(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return value.splitlines()
+    if isinstance(value, list):
+        return [str(line) for line in value]
+    raise ValueError(f"Unsupported line array value: {type(value)}")
+
+
+def render_lines(lines):
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n"
+
+
+def normalize_search_variants(lines):
+    variants = [lines]
+
+    stripped_plus = [line[1:] if line.startswith("+") else line for line in lines]
+    if stripped_plus != lines:
+        variants.append(stripped_plus)
+
+    deduped = []
+    seen = set()
+    for variant in variants:
+        key = tuple(variant)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(variant)
+    return deduped
+
+
+def apply_point_edit_plan(worktree_dir, plan, allowed_paths):
+    from aider.coders.editblock_coder import DEFAULT_FENCE, do_replace, find_similar_lines
+
+    worktree_dir = Path(worktree_dir).resolve()
+    allowed = set(allowed_paths)
+    file_cache = {}
+    modified_paths = set()
+    failures = []
+
+    for edit in plan.edits:
+        if edit.path not in allowed:
+            failures.append(f"{edit.path}: path is not in the allowed editable set")
+            continue
+
+        full_path = worktree_dir / edit.path
+        if edit.path not in file_cache:
+            file_cache[edit.path] = full_path.read_text(encoding="utf-8", errors="replace")
+
+        before_text = render_lines(edit.search_lines)
+        after_text = render_lines(edit.replace_lines)
+        new_content = None
+        tried_variants = []
+        for variant in normalize_search_variants(edit.search_lines):
+            variant_text = render_lines(variant)
+            tried_variants.append(variant_text)
+            new_content = do_replace(
+                full_path,
+                file_cache[edit.path],
+                variant_text,
+                after_text,
+                fence=DEFAULT_FENCE,
+            )
+            if new_content is not None:
+                break
+
+        if new_content is None:
+            similar = ""
+            for variant_text in tried_variants or [before_text]:
+                similar = find_similar_lines(variant_text, file_cache[edit.path])
+                if similar:
+                    new_content = do_replace(
+                        full_path,
+                        file_cache[edit.path],
+                        similar + "\n",
+                        after_text,
+                        fence=DEFAULT_FENCE,
+                    )
+                    if new_content is not None:
+                        break
+
+        if new_content is None:
+            message = f"{edit.path}: search_lines did not match"
+            if similar:
+                message += "\nClosest match:\n" + similar
+            failures.append(message)
+            continue
+
+        file_cache[edit.path] = new_content
+        modified_paths.add(edit.path)
+
+    for rel_path in modified_paths:
+        (worktree_dir / rel_path).write_text(file_cache[rel_path], encoding="utf-8")
+
+    return {
+        "modified_paths": sorted(modified_paths),
+        "failures": failures,
+    }
 
 
 def add_candidate(candidates, path, score, reason, symbol=None, snippet=None):

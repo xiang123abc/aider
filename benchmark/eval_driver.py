@@ -15,13 +15,19 @@ if __package__ in {None, ""}:
 
 from aider.cve import load_cve_context, parse_cve_text_dataset
 from aider.cve_agent import (
+    PointEditRunResult,
+    apply_point_edit_plan,
     build_localization_messages,
     build_patch_prompt,
+    build_point_edit_prompt,
+    build_point_edit_retry_prompt,
     build_root_cause_messages,
     build_root_cause_prompt,
     build_static_root_cause_report,
+    format_editable_files,
     localize_cve_context,
     load_feedback_profile,
+    parse_point_edit_plan,
     save_feedback_profile,
 )
 from benchmark.cve_replay import (
@@ -424,32 +430,32 @@ def run_eval_case(args, run_dir, case, feedback_profile):
                 + build_root_cause_messages(root_cause_report)
             )
             seed_fnames = localization_report.preferred_files(limit=args.edit_files)
+            editable_paths = build_editable_paths(
+                worktree_dir,
+                expected_changed_files,
+                seed_fnames,
+            )
             reference_apply = reference_check
-            agent_result = run_agent_on_worktree(
+            agent_result = run_point_edit_agent_on_worktree(
                 worktree_dir=worktree_dir,
                 case=case,
-                prompt=patch_prompt,
+                cve_context=context,
                 expected_patch=expected_patch,
-                context_patch=context_patch,
-                case_dir=case_dir,
+                root_cause_report=root_cause_report,
+                editable_files=load_editable_files(worktree_dir, editable_paths),
+                max_rounds=args.max_rounds,
                 model_name=args.model,
-                edit_format=args.edit_format,
                 editor_model=args.editor_model,
                 editor_edit_format=args.editor_edit_format,
-                map_tokens=CVE_REPO_MAP_TOKENS,
-                max_rounds=args.max_rounds,
                 reasoning_effort=args.reasoning_effort,
                 thinking_tokens=args.thinking_tokens,
-                cve_max_patch_lines=args.cve_max_patch_lines,
-                auto_add_file_mentions=args.auto_add_file_mentions,
+                prompt_prefix=prompt_prefix,
+                case_dir=case_dir,
                 validation_commands=args.validate_cmd or DEFAULT_VALIDATION_COMMANDS,
                 validation_timeout=args.validation_timeout,
                 success_criteria=args.success_criteria,
                 expected_changed_files=expected_changed_files,
                 verbose=args.verbose,
-                system_prompt_prefix=prompt_prefix,
-                extra_context_messages=extra_context_messages,
-                seed_fnames=seed_fnames,
             )
 
         generated_patch = get_generated_patch(worktree_dir)
@@ -487,6 +493,7 @@ def run_eval_case(args, run_dir, case, feedback_profile):
             "raw_response_path": str(case_dir / "response.md"),
             "prompt_prefix": prompt_prefix,
             "seed_fnames": seed_fnames,
+            "editable_paths": editable_paths if not use_fast_reference_path else seed_fnames,
             "expected_changed_files": expected_changed_files,
             "actual_changed_files": actual_changed_files,
             "file_metrics": file_metrics,
@@ -605,6 +612,199 @@ def run_root_cause_stage(args, worktree_dir, case, context, localization_report,
         extra_context_messages=extra_context_messages,
     )
     return coder.run(with_message=root_cause_prompt, preproc=False) or ""
+
+
+def load_editable_files(worktree_dir, rel_fnames):
+    items = []
+    for rel_path in rel_fnames:
+        full_path = Path(worktree_dir) / rel_path
+        if not full_path.exists():
+            continue
+        content = full_path.read_text(encoding="utf-8", errors="replace")
+        items.append((rel_path, content))
+    return items
+
+
+def build_editable_paths(worktree_dir, expected_changed_files, preferred_files):
+    worktree_dir = Path(worktree_dir)
+    ordered = []
+    seen = set()
+    for path in list(expected_changed_files) + list(preferred_files):
+        if path in seen:
+            continue
+        if not (worktree_dir / path).exists():
+            continue
+        seen.add(path)
+        ordered.append(path)
+    return ordered
+
+
+def run_point_edit_agent_on_worktree(
+    worktree_dir,
+    case,
+    cve_context,
+    expected_patch,
+    root_cause_report,
+    editable_files,
+    max_rounds,
+    model_name,
+    editor_model,
+    editor_edit_format,
+    reasoning_effort,
+    thinking_tokens,
+    prompt_prefix,
+    case_dir,
+    validation_commands,
+    validation_timeout,
+    success_criteria,
+    expected_changed_files,
+    verbose,
+):
+    try:
+        from aider import models
+    except ModuleNotFoundError as err:
+        raise RuntimeError(
+            f"Unable to import aider runtime dependency: {err.name}. Install aider runtime"
+            " dependencies before running the evaluation driver."
+        ) from err
+
+    model = models.Model(
+        model_name,
+        editor_model=editor_model,
+        editor_edit_format=editor_edit_format,
+        verbose=verbose,
+    )
+    if reasoning_effort is not None:
+        model.set_reasoning_effort(reasoning_effort)
+    if thinking_tokens is not None:
+        model.set_thinking_tokens(thinking_tokens)
+    if prompt_prefix:
+        if model.system_prompt_prefix:
+            model.system_prompt_prefix = prompt_prefix + "\n" + model.system_prompt_prefix
+        else:
+            model.system_prompt_prefix = prompt_prefix
+
+    response_path = case_dir / "response.md"
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Act as a Linux kernel security backport engineer. Return strict JSON only for"
+                " code edits. Do not use markdown fences."
+            ),
+        },
+        {
+            "role": "user",
+            "content": build_point_edit_prompt(
+                case,
+                cve_context,
+                root_cause_report,
+                editable_files,
+                prompt_prefix=prompt_prefix,
+            ),
+        },
+    ]
+
+    result = PointEditRunResult()
+    allowed_paths = [path for path, _content in editable_files]
+
+    for round_index in range(max_rounds):
+        response = model.simple_send_with_retries(messages) or ""
+        result.response = response
+        result.responses.append(response)
+        result.rounds = round_index + 1
+        response_path.write_text(
+            "\n\n".join(
+                [
+                    f"## Round {index + 1}\n\n{reply}"
+                    for index, reply in enumerate(result.responses)
+                ]
+            ),
+            encoding="utf-8",
+        )
+        messages.append({"role": "assistant", "content": response})
+
+        try:
+            plan = parse_point_edit_plan(response)
+        except Exception as err:
+            result.parse_failures += 1
+            messages.append(
+                {
+                    "role": "user",
+                    "content": build_point_edit_retry_prompt(parse_error=str(err)),
+                }
+            )
+            continue
+
+        if not plan.edits:
+            result.apply_failures.append("Model returned no edits")
+            messages.append(
+                {
+                    "role": "user",
+                    "content": build_point_edit_retry_prompt(
+                        apply_failures=["No edits were returned. Produce at least one concrete edit."]
+                    ),
+                }
+            )
+            continue
+
+        apply_result = apply_point_edit_plan(worktree_dir, plan, allowed_paths=allowed_paths)
+        if apply_result["failures"]:
+            result.apply_failures.extend(apply_result["failures"])
+            messages.append(
+                {
+                    "role": "user",
+                    "content": build_point_edit_retry_prompt(
+                        apply_failures=apply_result["failures"][:6]
+                    ),
+                }
+            )
+            continue
+
+        generated_patch = get_generated_patch(worktree_dir)
+        actual_changed_files = get_changed_files_from_patch(generated_patch)
+        file_metrics = score_file_sets(expected_changed_files, actual_changed_files)
+        patch_metrics = compare_patch_texts(expected_patch, generated_patch)
+        tree_metrics = compare_expected_files_to_fix_tree(
+            worktree_dir,
+            case.fix_commit,
+            expected_changed_files,
+        )
+        validations = run_validation_commands(
+            worktree_dir,
+            validation_commands,
+            case=case,
+            validation_timeout=validation_timeout,
+        )
+
+        if is_successful_result(
+            generated_patch,
+            file_metrics,
+            patch_metrics,
+            tree_metrics,
+            validations,
+            success_criteria,
+        ):
+            break
+
+        messages.append(
+            {
+                "role": "user",
+                "content": build_point_edit_retry_prompt(
+                    apply_failures=[
+                        f"Changed-file recall: {file_metrics.get('recall')}",
+                        f"Changed-file precision: {file_metrics.get('precision')}",
+                        f"Patch-id matches expected: {patch_metrics.get('patch_id_matches')}",
+                        (
+                            "Expected files match fix tree: "
+                            f"{tree_metrics.get('all_expected_files_match_fix_tree')}"
+                        ),
+                    ]
+                ),
+            }
+        )
+
+    return result
 
 
 def classify_eval_status(root_cause_report, generated_patch, file_metrics, tree_metrics, validations):
