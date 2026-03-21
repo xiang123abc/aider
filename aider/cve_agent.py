@@ -1,4 +1,5 @@
 import json
+from difflib import SequenceMatcher
 import re
 import subprocess
 from dataclasses import asdict, dataclass, field
@@ -573,6 +574,65 @@ def normalize_search_variants(lines):
     return deduped
 
 
+def leading_whitespace(line):
+    return line[: len(line) - len(line.lstrip(" \t"))]
+
+
+def find_stripped_match_lines(content, search_lines):
+    content_lines = content.splitlines()
+    target = [line.lstrip(" \t") for line in search_lines]
+    if not target:
+        return None
+
+    for start in range(len(content_lines) - len(target) + 1):
+        chunk = content_lines[start : start + len(target)]
+        if [line.lstrip(" \t") for line in chunk] == target:
+            return chunk
+
+    return None
+
+
+def choose_indent(search_indents, a_start, a_end, a_index, last_indent):
+    if a_start < a_end and a_index < len(search_indents):
+        return search_indents[a_index]
+    if a_start > 0:
+        return search_indents[a_start - 1]
+    if a_end < len(search_indents):
+        return search_indents[a_end]
+    return last_indent
+
+
+def reindent_replace_lines(search_lines, replace_lines, matched_lines):
+    search_stripped = [line.lstrip(" \t") for line in search_lines]
+    replace_stripped = [line.lstrip(" \t") for line in replace_lines]
+    search_indents = [leading_whitespace(line) for line in matched_lines]
+
+    rebuilt = [""] * len(replace_lines)
+    matcher = SequenceMatcher(a=search_stripped, b=replace_stripped)
+    last_indent = search_indents[0] if search_indents else ""
+
+    for tag, a_start, a_end, b_start, b_end in matcher.get_opcodes():
+        if tag == "equal":
+            for offset, b_index in enumerate(range(b_start, b_end)):
+                a_index = a_start + offset
+                indent = search_indents[a_index] if a_index < len(search_indents) else last_indent
+                rebuilt[b_index] = indent + replace_stripped[b_index] if replace_stripped[b_index] else ""
+                last_indent = indent
+            continue
+
+        for offset, b_index in enumerate(range(b_start, b_end)):
+            a_index = min(a_start + offset, max(a_end - 1, a_start))
+            indent = choose_indent(search_indents, a_start, a_end, a_index, last_indent)
+            rebuilt[b_index] = indent + replace_stripped[b_index] if replace_stripped[b_index] else ""
+            last_indent = indent
+
+    for index, line in enumerate(rebuilt):
+        if line == "" and replace_lines[index].strip():
+            rebuilt[index] = replace_lines[index]
+
+    return rebuilt
+
+
 def apply_point_edit_plan(worktree_dir, plan, allowed_paths):
     from aider.coders.editblock_coder import DEFAULT_FENCE, do_replace, find_similar_lines
 
@@ -622,6 +682,23 @@ def apply_point_edit_plan(worktree_dir, plan, allowed_paths):
                     )
                     if new_content is not None:
                         break
+
+        if new_content is None:
+            matched_lines = find_stripped_match_lines(file_cache[edit.path], edit.search_lines)
+            if matched_lines:
+                adjusted_replace_lines = reindent_replace_lines(
+                    edit.search_lines,
+                    edit.replace_lines,
+                    matched_lines,
+                )
+                new_content = do_replace(
+                    full_path,
+                    file_cache[edit.path],
+                    render_lines(matched_lines),
+                    render_lines(adjusted_replace_lines),
+                    fence=DEFAULT_FENCE,
+                )
+                similar = "\n".join(matched_lines)
 
         if new_content is None:
             message = f"{edit.path}: search_lines did not match"
