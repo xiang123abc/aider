@@ -8,6 +8,7 @@ class ChatChunks:
     examples: List = field(default_factory=list)
     done: List = field(default_factory=list)
     repo: List = field(default_factory=list)
+    extra_context: List = field(default_factory=list)
     readonly_files: List = field(default_factory=list)
     chat_files: List = field(default_factory=list)
     cur: List = field(default_factory=list)
@@ -19,6 +20,7 @@ class ChatChunks:
             + self.examples
             + self.readonly_files
             + self.repo
+            + self.extra_context
             + self.done
             + self.chat_files
             + self.cur

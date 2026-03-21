@@ -1,0 +1,82 @@
+[
+  {
+    "cve": "CVE-2018-1000204",
+    "fix_commit": "cb1401b5bcc2feb5b038fc4b512e5968b016e05e",
+    "pre_fix_commits": [
+      "9d86bc8b188a77c8d6f7252280ec2bd24ad6fbc1",
+      "41434488ca714ab15cb2a4d0378418d1be8052d2"
+    ]
+  },
+  {
+    "cve": "CVE-2024-50047",
+    "fix_commit": "15a0a5de49507062bc3be4014a403d8cea5533de",
+    "pre_fix_commits": [
+      "0c7b20f7785cfdd59403333612c90b458b12307c",
+      "600f55da8d909f93638c65de3df666969463f806"
+    ]
+  },
+  {
+    "cve": "CVE-2020-26145",
+    "fix_commit": "24900688ee47071aa6a61e78473999b5b80f0423",
+    "pre_fix_commits": [
+      "775fdb4042b29097d60d9cef88dcf7aa30e5229a",
+      "7bf4461f1c97207fda757014690d55a447ce859f"
+    ]
+  },
+  {
+    "cve": "CVE-2024-54680",
+    "fix_commit": "8dbf060480236877703bff0106fc984576184d11",
+    "pre_fix_commits": [
+      "fd8973b625b67ae8e93176ac04f1deba0ae72ae6",
+      "b7ce8db490286c2e009758fa1416d66aeb333614"
+    ]
+  },
+  {
+    "cve": "CVE-2024-53241",
+    "fix_commit": "bcf0e2fda80c69392489d7739708409b7db1c865",
+    "pre_fix_commits": [
+      "bcca7e0679095c0fbaae48b01c159a985ec105dc",
+      "31f29270c15bef700cbea40297c6b9a7114b3960"
+    ]
+  },
+  {
+    "cve": "CVE-2024-53240",
+    "fix_commit": "fe9a8f5250aed0948b668c8a4e051e3b0fc29f09",
+    "pre_fix_commits": [
+      "4a41bb9f2b402469d425a1c13359d3b3ea4e6403",
+      "9f7a9f95dfb7954c53b33a06a7eac1b360d5d4f1"
+    ]
+  },
+  {
+    "cve": "CVE-2024-49897",
+    "fix_commit": "d247af7c5dbf143ad6be8179bb1550e76d6af57e",
+    "pre_fix_commits": [
+      "8c854138b593efbbd8fa46a25f3288c121c1d1a1",
+      "ebef6616219ff04abdeb39450625f85419787ee3"
+    ]
+  },
+  {
+    "cve": "CVE-2024-49906",
+    "fix_commit": "ebef6616219ff04abdeb39450625f85419787ee3",
+    "pre_fix_commits": [
+      "ec1be3c527b4a5fc85bcc1b0be7cec08bf60c796",
+      "205e3b96cc9aa9211fd2c849a16245cf236b2d36"
+    ]
+  },
+  {
+    "cve": "CVE-2024-49915",
+    "fix_commit": "ec1be3c527b4a5fc85bcc1b0be7cec08bf60c796",
+    "pre_fix_commits": [
+      "205e3b96cc9aa9211fd2c849a16245cf236b2d36",
+      "f14fc623dd23fc0e1352bddc37d5b66a85dea8c0"
+    ]
+  },
+  {
+    "cve": "CVE-2024-49917",
+    "fix_commit": "205e3b96cc9aa9211fd2c849a16245cf236b2d36",
+    "pre_fix_commits": [
+      "f14fc623dd23fc0e1352bddc37d5b66a85dea8c0",
+      "ecb4aaa658da760fb83afd79cc5fd4360aa60635"
+    ]
+  }
+]

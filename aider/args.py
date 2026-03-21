@@ -228,6 +228,68 @@ def get_parser(default_config_files, git_root):
     )
 
     ##########
+    group = parser.add_argument_group("CVE workflow")
+    group.add_argument(
+        "--cve",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable CVE backport mode and prefer the cve edit format",
+    )
+    group.add_argument(
+        "--cve-id",
+        default=None,
+        help="CVE identifier for a direct fix-commit run",
+    )
+    group.add_argument(
+        "--cve-fix-commit",
+        default=None,
+        help="Upstream fixed commit used as the security patch reference",
+    )
+    group.add_argument(
+        "--cve-patch",
+        default=None,
+        help="Local patch file to use as the upstream security fix reference",
+    ).complete = shtab.FILE
+    group.add_argument(
+        "--cve-dataset",
+        default=None,
+        help="JSON dataset of CVE cases with fix commits and vulnerable commits",
+    ).complete = shtab.FILE
+    group.add_argument(
+        "--cve-case",
+        default=None,
+        help="Select a CVE case by id or dataset index",
+    )
+    group.add_argument(
+        "--cve-pre-fix-commit",
+        default=None,
+        help="Explicit vulnerable commit to target instead of auto-detecting the parent commit",
+    )
+    group.add_argument(
+        "--cve-description",
+        default=None,
+        help="Short vulnerability description or operator notes",
+    )
+    group.add_argument(
+        "--cve-reference",
+        action="append",
+        default=[],
+        help="Extra CVE references to inject into context (repeatable)",
+    )
+    group.add_argument(
+        "--cve-auto-add",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Auto-add exact upstream path matches to the chat",
+    )
+    group.add_argument(
+        "--cve-max-patch-lines",
+        type=int,
+        default=400,
+        help="Maximum upstream patch lines to inject into model context",
+    )
+
+    ##########
     group = parser.add_argument_group("Cache settings")
     group.add_argument(
         "--cache-prompts",

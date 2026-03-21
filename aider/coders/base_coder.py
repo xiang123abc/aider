@@ -338,6 +338,7 @@ class Coder:
         file_watcher=None,
         auto_copy_context=False,
         auto_accept_architect=True,
+        extra_context_messages=None,
     ):
         # Fill in a dummy Analytics if needed, but it is never .enable()'d
         self.analytics = analytics if analytics is not None else Analytics()
@@ -352,6 +353,7 @@ class Coder:
 
         self.auto_copy_context = auto_copy_context
         self.auto_accept_architect = auto_accept_architect
+        self.extra_context_messages = list(extra_context_messages or [])
 
         self.ignore_mentions = ignore_mentions
         if not self.ignore_mentions:
@@ -759,6 +761,9 @@ class Coder:
                 ),
             ]
         return repo_messages
+
+    def get_extra_context_messages(self):
+        return list(self.extra_context_messages)
 
     def get_readonly_files_messages(self):
         readonly_messages = []
@@ -1279,6 +1284,7 @@ class Coder:
         chunks.done = self.done_messages
 
         chunks.repo = self.get_repo_messages()
+        chunks.extra_context = self.get_extra_context_messages()
         chunks.readonly_files = self.get_readonly_files_messages()
         chunks.chat_files = self.get_chat_files_messages()
 

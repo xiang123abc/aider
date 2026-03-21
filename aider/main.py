@@ -25,6 +25,7 @@ from aider.coders import Coder
 from aider.coders.base_coder import UnknownEditFormat
 from aider.commands import Commands, SwitchCoder
 from aider.copypaste import ClipboardWatcher
+from aider.cve import load_cve_context_from_args
 from aider.deprecated import handle_deprecated_model_args
 from aider.format_settings import format_settings, scrub_sensitive_info
 from aider.history import ChatSummary
@@ -761,6 +762,19 @@ def main(argv=None, input=None, output=None, force_git_root=None, return_coder=F
         analytics.event("exit", reason="Listed models")
         return 0
 
+    cve_requested = bool(
+        args.cve
+        or args.cve_patch
+        or args.cve_fix_commit
+        or args.cve_dataset
+        or args.cve_case
+        or args.cve_description
+        or args.cve_reference
+        or args.cve_id
+    )
+    if cve_requested and args.edit_format is None:
+        args.edit_format = "cve"
+
     # Process any command line aliases
     if args.alias:
         for alias_def in args.alias:
@@ -932,6 +946,13 @@ def main(argv=None, input=None, output=None, force_git_root=None, return_coder=F
     else:
         analytics.event("no-repo")
 
+    try:
+        cve_context = load_cve_context_from_args(args, repo=repo)
+    except ValueError as err:
+        io.tool_error(str(err))
+        analytics.event("exit", reason="Invalid CVE context")
+        return 1
+
     commands = Commands(
         io,
         None,
@@ -965,6 +986,11 @@ def main(argv=None, input=None, output=None, force_git_root=None, return_coder=F
         map_tokens = main_model.get_repo_map_tokens()
     else:
         map_tokens = args.map_tokens
+
+    if cve_requested:
+        if map_tokens:
+            io.tool_warning("Disabling repo-map for CVE workflow; using targeted localization only.")
+        map_tokens = 0
 
     # Track auto-commits configuration
     analytics.event("auto_commits", enabled=bool(args.auto_commits))
@@ -1004,6 +1030,8 @@ def main(argv=None, input=None, output=None, force_git_root=None, return_coder=F
             auto_copy_context=args.copy_paste,
             auto_accept_architect=args.auto_accept_architect,
             add_gitignore_files=args.add_gitignore_files,
+            cve_context=cve_context,
+            cve_auto_add=args.cve_auto_add,
         )
     except UnknownEditFormat as err:
         io.tool_error(str(err))
